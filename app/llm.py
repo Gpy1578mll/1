@@ -50,7 +50,7 @@ async def extract_kind(text, kind):
         raise ExtractionError(str(exc)) from exc
 
 async def _extract_kind(text, kind):
-    prompt = (ROOT / "prompts" / f"{kind}.txt").read_text()
+    prompt = (ROOT / "prompts" / f"{kind}.txt").read_text(encoding="utf-8")
     results = []
     headers = {}
     if os.getenv("LM_STUDIO_API_KEY"):
