@@ -114,6 +114,10 @@ def test_invalid_model_identifier(configured,monkeypatch,model):
 @pytest.mark.parametrize('body',[
     {'message':'API key fake-yandex-key invalid; model URI not recognized'},
     {'error':{'message':'Invalid folder; token='+('A'*50)}},
+    {'error':'Invalid key fake-yandex-key'},
+    {'detail':'Invalid model fake-yandex-key'},
+    {'description':'Invalid folder fake-yandex-key'},
+    {'error':{'description':'Invalid scope fake-yandex-key'}},
 ])
 def test_preflight_message_is_displayed_with_redacted_credentials(configured,body):
     description=yandex.access_error_description(httpx.Response(400,json=body))
@@ -123,6 +127,16 @@ def test_preflight_message_is_displayed_with_redacted_credentials(configured,bod
     assert 'A'*50 not in description
     # Actual extraction keeps the response message out of the UI.
     assert 'Сообщение Яндекса' not in yandex.error_description(httpx.Response(400,json=body))
+
+@pytest.mark.parametrize('body', ['Invalid key fake-yandex-key', '', 'token='+('A+/'*20)])
+def test_preflight_non_json_response_is_safe(configured,body):
+    description=yandex.access_error_description(httpx.Response(400,text=body))
+    assert 'Сообщение Яндекса' in description
+    assert 'fake-yandex-key' not in description
+    assert 'A+/'*20 not in description
+    assert 'не содержит JSON-схему' in description
+    if not body:
+        assert 'пустой ответ сервера' in description
 
 def test_launcher_reports_provider_message_without_secret(configured,monkeypatch,capsys):
     def post(url,**kwargs):

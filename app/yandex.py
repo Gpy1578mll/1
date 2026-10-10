@@ -41,23 +41,34 @@ def error_description(response):
 def access_error_description(response):
     """Expose a scrubbed message only for the fixed, document-free startup probe."""
     description = error_description(response)
+    if response.status_code == 400:
+        description = "YandexGPT API: HTTP 400. Проверьте каталог, API-ключ и имя модели. Проверка доступа не содержит JSON-схему."
     # The startup request contains no operator document. The provider's message
     # helps diagnose catalog/auth/model problems; redact keys before displaying.
     try:
         body = response.json()
-        message = body.get("message") if isinstance(body, dict) else None
-        nested = body.get("error") if isinstance(body, dict) else None
-        if isinstance(nested, dict):
-            message = nested.get("message", message)
-        if isinstance(message, str) and message.strip():
-            secret = os.getenv("YANDEX_API_KEY", "").strip()
-            if secret:
-                message = message.replace(secret, "[ключ скрыт]")
-            message = re.sub(r"[A-Za-z0-9_=-]{24,}", "[идентификатор скрыт]", message)
-            message = " ".join(message.split())[:600]
-            description += " Сообщение Яндекса: " + message
+        # Error gateways can return strings, differently named JSON fields or
+        # plain text. This fallback is restricted to the document-free probe.
+        message = json.dumps(body, ensure_ascii=False)
+        if isinstance(body, dict):
+            for field in ("message", "error", "detail", "description"):
+                value = body.get(field)
+                if isinstance(value, str) and value.strip():
+                    message = value
+                    break
+                if isinstance(value, dict):
+                    message = json.dumps(value, ensure_ascii=False)
+                    break
+        elif isinstance(body, str):
+            message = body
     except (ValueError, TypeError):
-        pass
+        message = response.text
+    secret = os.getenv("YANDEX_API_KEY", "").strip()
+    if secret:
+        message = message.replace(secret, "[ключ скрыт]")
+    message = re.sub(r"[A-Za-z0-9_+/=-]{24,}", "[идентификатор скрыт]", message)
+    message = " ".join(message.split())[:600]
+    description += " Сообщение Яндекса: " + (message or "пустой ответ сервера")
     return "Проверка доступа (tokenizeCompletion). " + description
 
 def check_access():
