@@ -38,6 +38,28 @@ def error_description(response):
         503: "Сервис временно недоступен. Повторите позже."}
     return f"YandexGPT API: HTTP {response.status_code}. " + hints.get(response.status_code, "Проверьте доступность сервиса Yandex Cloud.")
 
+def access_error_description(response):
+    """Expose a scrubbed message only for the fixed, document-free startup probe."""
+    description = error_description(response)
+    # The startup request contains no operator document. The provider's message
+    # helps diagnose catalog/auth/model problems; redact keys before displaying.
+    try:
+        body = response.json()
+        message = body.get("message") if isinstance(body, dict) else None
+        nested = body.get("error") if isinstance(body, dict) else None
+        if isinstance(nested, dict):
+            message = nested.get("message", message)
+        if isinstance(message, str) and message.strip():
+            secret = os.getenv("YANDEX_API_KEY", "").strip()
+            if secret:
+                message = message.replace(secret, "[ключ скрыт]")
+            message = re.sub(r"[A-Za-z0-9_=-]{24,}", "[идентификатор скрыт]", message)
+            message = " ".join(message.split())[:600]
+            description += " Сообщение Яндекса: " + message
+    except (ValueError, TypeError):
+        pass
+    return "Проверка доступа (tokenizeCompletion). " + description
+
 def check_access():
     # Tokenization verifies the selected API/model access without generating a completion.
     response = httpx.post(BASE_URL + "/tokenizeCompletion", headers=headers(), timeout=30,

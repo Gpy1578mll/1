@@ -110,3 +110,26 @@ def test_launcher_checks_access_without_generation(configured,monkeypatch,capsys
 def test_invalid_model_identifier(configured,monkeypatch,model):
     monkeypatch.setenv('YANDEX_MODEL',model)
     with pytest.raises(ValueError):yandex.model_name()
+
+@pytest.mark.parametrize('body',[
+    {'message':'API key fake-yandex-key invalid; model URI not recognized'},
+    {'error':{'message':'Invalid folder; token='+('A'*50)}},
+])
+def test_preflight_message_is_displayed_with_redacted_credentials(configured,body):
+    description=yandex.access_error_description(httpx.Response(400,json=body))
+    assert 'tokenizeCompletion' in description
+    assert 'Сообщение Яндекса' in description
+    assert 'fake-yandex-key' not in description
+    assert 'A'*50 not in description
+    # Actual extraction keeps the response message out of the UI.
+    assert 'Сообщение Яндекса' not in yandex.error_description(httpx.Response(400,json=body))
+
+def test_launcher_reports_provider_message_without_secret(configured,monkeypatch,capsys):
+    def post(url,**kwargs):
+        return httpx.Response(400,json={'message':'API key fake-yandex-key not valid'},request=httpx.Request('POST',url))
+    monkeypatch.setattr(start_yandex.httpx,'post',post)
+    assert start_yandex.main()==1
+    output=capsys.readouterr().out
+    assert 'tokenizeCompletion' in output
+    assert 'not valid' in output
+    assert 'fake-yandex-key' not in output

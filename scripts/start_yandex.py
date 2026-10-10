@@ -32,7 +32,7 @@ def main():
     try:
         yandex.check_access()
     except httpx.HTTPStatusError as exc:
-        print(yandex.error_description(exc.response))
+        print(yandex.access_error_description(exc.response))
         return 1
     except httpx.RequestError:
         print('Не удалось подключиться к YandexGPT. Проверьте доступ к llm.api.cloud.yandex.net.')
