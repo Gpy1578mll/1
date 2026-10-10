@@ -100,9 +100,10 @@ def index():
 @app.get("/api/config")
 def configuration():
     provider = provider_name()
-    return {"provider": provider,
-            "notice": "Gemini API: текст документа отправляется Google для распознавания." if provider == "gemini"
-                      else "Локальная модель: текст передаётся настроенному LLM серверу."}
+    notices = {"gemini": "Gemini API: текст документа отправляется Google для распознавания.",
+               "yandex": "YandexGPT API: текст документа отправляется Yandex Cloud для распознавания. Проверьте тариф и доступный грант.",
+               "local": "Локальная модель: текст передаётся настроенному LLM серверу."}
+    return {"provider": provider, "notice": notices[provider]}
 
 @app.post("/api/upload")
 async def upload(file: UploadFile):

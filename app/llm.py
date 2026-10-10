@@ -3,7 +3,7 @@ import os
 from pathlib import Path
 import httpx
 from app.persons import PERSON_SCHEMA, parse_person
-from app import gemini
+from app import gemini, yandex
 
 KINDS = ("persons", "organizations", "entrepreneurs", "communications")
 ROOT = Path(__file__).resolve().parent.parent
@@ -18,17 +18,21 @@ ENTITY_SCHEMA = {
 
 def provider_name():
     provider = os.getenv("LLM_PROVIDER", "local").strip().lower()
-    if provider not in {"local", "gemini"}:
-        raise ValueError("LLM_PROVIDER должен быть local или gemini")
+    if provider not in {"local", "gemini", "yandex"}:
+        raise ValueError("LLM_PROVIDER должен быть local, gemini или yandex")
     return provider
 
 def validate_configuration():
     name = model_name()
     if provider_name() == "gemini":
         gemini.api_key()
+    elif provider_name() == "yandex":
+        yandex.api_key()
     return name
 
 def model_name():
+    if provider_name() == "yandex":
+        return yandex.model_name()
     if provider_name() == "gemini":
         return gemini.model_name()
     name = os.getenv("LM_STUDIO_MODEL", "").strip()
@@ -46,11 +50,15 @@ async def extract_kind(text, kind):
     try:
         return await _extract_kind(text, kind)
     except httpx.TimeoutException as exc:
+        if provider_name() == "yandex":
+            raise ExtractionError("YandexGPT API не ответил вовремя. Проверьте соединение; YANDEX_TIMEOUT задаёт тайм-аут запроса") from exc
         if provider_name() == "gemini":
             raise ExtractionError("Gemini API не ответил за отведённое время. Проверьте соединение; GEMINI_TIMEOUT задаёт тайм-аут в секундах") from exc
         raise ExtractionError("LM Studio не ответила за отведённое время. Проверьте журнал сервера и скорость генерации; LM_STUDIO_TIMEOUT задаёт тайм-аут в секундах (по умолчанию 180).") from exc
     except httpx.HTTPStatusError as exc:
         status = exc.response.status_code
+        if provider_name() == "yandex":
+            raise ExtractionError(yandex.error_description(exc.response)) from exc
         if provider_name() == "gemini":
             raise ExtractionError(gemini.error_description(exc.response)) from exc
         hint = {
@@ -62,11 +70,13 @@ async def extract_kind(text, kind):
         }.get(status, "Посмотрите журнал сервера LM Studio в момент запроса.")
         raise ExtractionError(f"LM Studio вернула HTTP {status}. {hint}") from exc
     except httpx.RequestError as exc:
+        if provider_name() == "yandex":
+            raise ExtractionError("Не удалось подключиться к YandexGPT API. Проверьте доступ к llm.api.cloud.yandex.net") from exc
         if provider_name() == "gemini":
             raise ExtractionError("Не удалось подключиться к Gemini API. Проверьте доступ к generativelanguage.googleapis.com") from exc
         raise ExtractionError("Не удалось подключиться к LM Studio. Проверьте, что сервер запущен, а LM_STUDIO_URL содержит правильный адрес и порт.") from exc
     except json.JSONDecodeError as exc:
-        raise ExtractionError("Модель или API вернули невалидный JSON. Проверьте поддержку структурированных ответов и журнал LM Studio.") from exc
+        raise ExtractionError("Модель или API вернули невалидный JSON. Проверьте поддержку структурированных ответов выбранной моделью.") from exc
     except ValueError as exc:
         raise ExtractionError(str(exc)) from exc
 
@@ -75,11 +85,13 @@ async def _extract_kind(text, kind):
     results = []
     provider = provider_name()
     headers = {}
-    if provider == "gemini":
+    if provider == "yandex":
+        headers = yandex.headers()
+    elif provider == "gemini":
         headers["x-goog-api-key"] = gemini.api_key()
     elif os.getenv("LM_STUDIO_API_KEY"):
         headers["Authorization"] = "Bearer " + os.environ["LM_STUDIO_API_KEY"]
-    timeout_var = "GEMINI_TIMEOUT" if provider == "gemini" else "LM_STUDIO_TIMEOUT"
+    timeout_var = {"gemini": "GEMINI_TIMEOUT", "yandex": "YANDEX_TIMEOUT", "local": "LM_STUDIO_TIMEOUT"}[provider]
     try:
         timeout = float(os.getenv(timeout_var, "180"))
     except ValueError as exc:
@@ -90,7 +102,9 @@ async def _extract_kind(text, kind):
         for start in range(0, len(text), 5500):
             chunk = text[start:start + 6500]
             schema = PERSON_SCHEMA if kind == "persons" else ENTITY_SCHEMA
-            if provider == "gemini":
+            if provider == "yandex":
+                payload = await yandex.generate(client, prompt, chunk, schema)
+            elif provider == "gemini":
                 payload = await gemini.generate(client, prompt, chunk, schema)
             else:
                 response = await client.post(base_url() + "/chat/completions", json={

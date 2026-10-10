@@ -1,6 +1,10 @@
 # Проверка и сохранение сущностей
 
-Python / FastAPI, SQLite и распознавание через локальный сервер или Gemini API. Четыре отдельных скрипта и промпта выделяют и нормализуют сведения о людях, организации, ИП и электронные средства коммуникации. Для каждого человека отдельно извлекаются фамилия, имя, отчество, дата и место рождения. Телефоны пока не включены. Модель не должна разворачивать неизвестные инициалы или придумывать реквизиты.
+Python / FastAPI, SQLite и распознавание через локальный сервер, Gemini API или YandexGPT API. Четыре отдельных скрипта и промпта выделяют и нормализуют сведения о людях, организации, ИП и электронные средства коммуникации. Для каждого человека отдельно извлекаются фамилия, имя, отчество, дата и место рождения. Телефоны пока не включены. Модель не должна разворачивать неизвестные инициалы или придумывать реквизиты.
+
+## YandexGPT: запуск на Windows
+
+[Инструкция подключения YandexGPT](docs/yandex.md). Запуск: `start-yandex.bat` или `.venv312\Scripts\python.exe scripts\start_yandex.py`. Понадобятся ID каталога и секретный API-ключ Yandex Cloud. Текст передаётся провайдеру; проверьте тариф и пробный грант.
 
 ## Gemini API: простой запуск на Windows
 
@@ -42,7 +46,7 @@ export LM_STUDIO_MODEL="идентификатор-модели-из-LM-Studio"
 
 Файл: `data/entities.sqlite3`; каталог меняется через `DATA_DIR`. Исходный бинарный файл не сохраняется — хранится извлечённый текст.
 
-- `documents`: `id`, уникальный `review_token`, `filename`, `format`, `text`, `uploaded_at`, `confirmed_at`, `operator`, `model`, `original_result` (первоначальный ответ для аудита), `provider` (`local` или `gemini`). Время — Unix timestamp. `operator` пока NULL: авторизация не реализована.
+- `documents`: `id`, уникальный `review_token`, `filename`, `format`, `text`, `uploaded_at`, `confirmed_at`, `operator`, `model`, `original_result` (первоначальный ответ для аудита), `provider` (`local`, `gemini` или `yandex`). Время — Unix timestamp. `operator` пока NULL: авторизация не реализована.
 - `entities`: `id`, `document_id`, `kind`, `normalized_value`.
 - `mentions`: `id`, `entity_id`, `original_text`, `start`, `end`, `note`, `field`. Поле `field` указывает ФИО, дату или место рождения; для остальных категорий — `entity`. Позиции — индексы Unicode символов; конец не включается.
 
