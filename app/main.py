@@ -13,7 +13,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from docx import Document
 import pymupdf
-from app.llm import KINDS, ROOT, model_name, ExtractionError
+from app.llm import KINDS, ROOT, model_name, ExtractionError, provider_name, validate_configuration
 from app.persons import validate_spans, person_label
 from app.extract_persons import extract as persons
 from app.extract_organizations import extract as organizations
@@ -45,6 +45,8 @@ def database():
     db.execute("""CREATE TABLE IF NOT EXISTS person_details(
         entity_id INTEGER PRIMARY KEY REFERENCES entities(id), surname TEXT, given_name TEXT,
         patronymic TEXT, birth_date TEXT, birth_place TEXT)""")
+    if "provider" not in {row[1] for row in db.execute("PRAGMA table_info(documents)")}:
+        db.execute("ALTER TABLE documents ADD COLUMN provider TEXT NOT NULL DEFAULT 'local'")
     db.commit()
     return db
 
@@ -95,6 +97,13 @@ async def process(token):
 def index():
     return FileResponse(ROOT / "app/templates/index.html")
 
+@app.get("/api/config")
+def configuration():
+    provider = provider_name()
+    return {"provider": provider,
+            "notice": "Gemini API: текст документа отправляется Google для распознавания." if provider == "gemini"
+                      else "Локальная модель: текст передаётся настроенному LLM серверу."}
+
 @app.post("/api/upload")
 async def upload(file: UploadFile):
     prune()
@@ -113,12 +122,12 @@ async def upload(file: UploadFile):
     if len(text) > 300000:
         raise HTTPException(400, f"Извлечено {len(text)} символов; максимум — 300 000.")
     try:
-        model = model_name()
+        model = validate_configuration()
     except ValueError as exc:
         raise HTTPException(503, str(exc)) from exc
     token = secrets.token_urlsafe(32)
     JOBS[token] = {"filename": filename, "text": text, "uploaded_at": time.time(), "status": "processing",
-                   "entities": [], "model": model}
+                   "entities": [], "model": model, "provider": provider_name()}
     asyncio.create_task(process(token))
     return {"token": token}
 
@@ -170,8 +179,8 @@ async def confirm(token: str, request: Request):
         existing = db.execute("SELECT id FROM documents WHERE review_token=?", (token,)).fetchone()
         if existing:
             return {"document_id": existing[0], "already_saved": True}
-        cursor = db.execute("INSERT INTO documents(review_token,filename,format,text,uploaded_at,confirmed_at,operator,model,original_result) VALUES(?,?,?,?,?,?,?,?,?)",
-            (token, job["filename"], Path(job["filename"]).suffix, job["text"], job["uploaded_at"], time.time(), None, job["model"], json.dumps(job["entities"], ensure_ascii=False)))
+        cursor = db.execute("INSERT INTO documents(review_token,filename,format,text,uploaded_at,confirmed_at,operator,model,original_result,provider) VALUES(?,?,?,?,?,?,?,?,?,?)",
+            (token, job["filename"], Path(job["filename"]).suffix, job["text"], job["uploaded_at"], time.time(), None, job["model"], json.dumps(job["entities"], ensure_ascii=False), job.get("provider", "local")))
         document_id = cursor.lastrowid
         for e in entities:
             entity_id = db.execute("INSERT INTO entities(document_id,kind,normalized_value) VALUES(?,?,?)",

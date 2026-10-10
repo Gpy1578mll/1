@@ -159,3 +159,6 @@ $('cancel').onclick = async () => {
   try { await api('/api/review/'+token,{method:'DELETE'}); $('review').hidden=true; entities=[]; text=''; message('Обработка отменена. Данные не записаны.'); }
   catch (error) { message(error.message); }
 };
+
+api('/api/config').then(config => { $('provider-notice').textContent = config.notice || ''; })
+  .catch(() => { $('provider-notice').textContent = 'Не удалось прочитать настройки распознавания.'; });

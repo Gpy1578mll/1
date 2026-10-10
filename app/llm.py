@@ -3,6 +3,7 @@ import os
 from pathlib import Path
 import httpx
 from app.persons import PERSON_SCHEMA, parse_person
+from app import gemini
 
 KINDS = ("persons", "organizations", "entrepreneurs", "communications")
 ROOT = Path(__file__).resolve().parent.parent
@@ -15,7 +16,21 @@ ENTITY_SCHEMA = {
         "required": ["original_text", "normalized_value", "note"]}}},
     "required": ["entities"]}
 
+def provider_name():
+    provider = os.getenv("LLM_PROVIDER", "local").strip().lower()
+    if provider not in {"local", "gemini"}:
+        raise ValueError("LLM_PROVIDER должен быть local или gemini")
+    return provider
+
+def validate_configuration():
+    name = model_name()
+    if provider_name() == "gemini":
+        gemini.api_key()
+    return name
+
 def model_name():
+    if provider_name() == "gemini":
+        return gemini.model_name()
     name = os.getenv("LM_STUDIO_MODEL", "").strip()
     if not name:
         raise ValueError("Задайте LM_STUDIO_MODEL: идентификатор загруженной модели из LM Studio")
@@ -31,9 +46,20 @@ async def extract_kind(text, kind):
     try:
         return await _extract_kind(text, kind)
     except httpx.TimeoutException as exc:
+        if provider_name() == "gemini":
+            raise ExtractionError("Gemini API не ответил за отведённое время. Проверьте соединение; GEMINI_TIMEOUT задаёт тайм-аут в секундах") from exc
         raise ExtractionError("LM Studio не ответила за отведённое время. Проверьте журнал сервера и скорость генерации; LM_STUDIO_TIMEOUT задаёт тайм-аут в секундах (по умолчанию 180).") from exc
     except httpx.HTTPStatusError as exc:
         status = exc.response.status_code
+        if provider_name() == "gemini":
+            hints = {
+                400: "Проверьте модель, API-ключ и поддержку структурированных ответов.",
+                401: "Проверьте GEMINI_API_KEY.",
+                403: "Проверьте права ключа и доступность Gemini API в вашем регионе.",
+                404: "Указанная GEMINI_MODEL не найдена или недоступна этому ключу.",
+                429: "Исчерпана квота или превышена частота запросов. Проверьте лимиты в Google AI Studio; автоматического платного переключения нет.",
+                503: "Сервис временно недоступен. Повторите позже."}
+            raise ExtractionError(f"Gemini API вернул HTTP {status}. " + hints.get(status, "Проверьте состояние сервиса Google.")) from exc
         hint = {
             400: "Проверьте в журнале LM Studio идентификатор модели, размер контекста и поддержку JSON-схемы.",
             401: "Сервер требует авторизацию. Проверьте настройку LM_STUDIO_API_KEY.",
@@ -43,6 +69,8 @@ async def extract_kind(text, kind):
         }.get(status, "Посмотрите журнал сервера LM Studio в момент запроса.")
         raise ExtractionError(f"LM Studio вернула HTTP {status}. {hint}") from exc
     except httpx.RequestError as exc:
+        if provider_name() == "gemini":
+            raise ExtractionError("Не удалось подключиться к Gemini API. Проверьте доступ к generativelanguage.googleapis.com") from exc
         raise ExtractionError("Не удалось подключиться к LM Studio. Проверьте, что сервер запущен, а LM_STUDIO_URL содержит правильный адрес и порт.") from exc
     except json.JSONDecodeError as exc:
         raise ExtractionError("Модель или API вернули невалидный JSON. Проверьте поддержку структурированных ответов и журнал LM Studio.") from exc
@@ -52,36 +80,44 @@ async def extract_kind(text, kind):
 async def _extract_kind(text, kind):
     prompt = (ROOT / "prompts" / f"{kind}.txt").read_text(encoding="utf-8")
     results = []
+    provider = provider_name()
     headers = {}
-    if os.getenv("LM_STUDIO_API_KEY"):
+    if provider == "gemini":
+        headers["x-goog-api-key"] = gemini.api_key()
+    elif os.getenv("LM_STUDIO_API_KEY"):
         headers["Authorization"] = "Bearer " + os.environ["LM_STUDIO_API_KEY"]
+    timeout_var = "GEMINI_TIMEOUT" if provider == "gemini" else "LM_STUDIO_TIMEOUT"
     try:
-        timeout = float(os.getenv("LM_STUDIO_TIMEOUT", "180"))
+        timeout = float(os.getenv(timeout_var, "180"))
     except ValueError as exc:
-        raise ValueError("LM_STUDIO_TIMEOUT должен быть числом от 1 до 3600") from exc
+        raise ValueError(f"{timeout_var} должен быть числом от 1 до 3600") from exc
     if not 1 <= timeout <= 3600:
-        raise ValueError("LM_STUDIO_TIMEOUT должен быть числом от 1 до 3600")
+        raise ValueError(f"{timeout_var} должен быть числом от 1 до 3600")
     async with httpx.AsyncClient(timeout=timeout, headers=headers) as client:
         for start in range(0, len(text), 5500):
             chunk = text[start:start + 6500]
-            response = await client.post(base_url() + "/chat/completions", json={
-                "model": model_name(), "stream": False, "temperature": 0,
-                "response_format": {"type": "json_schema", "json_schema": {
-                    "name": "entities", "strict": True, "schema": PERSON_SCHEMA if kind == "persons" else ENTITY_SCHEMA}},
-                "messages": [{"role": "system", "content": prompt}, {"role": "user", "content": chunk}]})
-            response.raise_for_status()
-            envelope = response.json()
-            choices = envelope.get("choices") if isinstance(envelope, dict) else None
-            if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
-                raise ValueError("API LM Studio вернул ответ без ожидаемого списка choices")
-            choice = choices[0]
-            if choice.get("finish_reason") != "stop":
-                raise ValueError("Ответ модели не завершён; уменьшите размер фрагмента или увеличьте лимит генерации")
-            message = choice.get("message")
-            content = message.get("content") if isinstance(message, dict) else None
-            if not isinstance(content, str):
-                raise ValueError("API LM Studio вернул ответ без текстового message.content")
-            payload = json.loads(content)
+            schema = PERSON_SCHEMA if kind == "persons" else ENTITY_SCHEMA
+            if provider == "gemini":
+                payload = await gemini.generate(client, prompt, chunk, schema)
+            else:
+                response = await client.post(base_url() + "/chat/completions", json={
+                    "model": model_name(), "stream": False, "temperature": 0,
+                    "response_format": {"type": "json_schema", "json_schema": {
+                        "name": "entities", "strict": True, "schema": PERSON_SCHEMA if kind == "persons" else ENTITY_SCHEMA}},
+                    "messages": [{"role": "system", "content": prompt}, {"role": "user", "content": chunk}]})
+                response.raise_for_status()
+                envelope = response.json()
+                choices = envelope.get("choices") if isinstance(envelope, dict) else None
+                if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+                    raise ValueError("API LM Studio вернул ответ без ожидаемого списка choices")
+                choice = choices[0]
+                if choice.get("finish_reason") != "stop":
+                    raise ValueError("Ответ модели не завершён; уменьшите размер фрагмента или увеличьте лимит генерации")
+                message = choice.get("message")
+                content = message.get("content") if isinstance(message, dict) else None
+                if not isinstance(content, str):
+                    raise ValueError("API LM Studio вернул ответ без текстового message.content")
+                payload = json.loads(content)
             if kind == "persons":
                 if not isinstance(payload, list):
                     raise ValueError("Модель должна вернуть массив сведений о людях")
