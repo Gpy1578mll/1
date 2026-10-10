@@ -58,3 +58,23 @@ $env:LM_STUDIO_TIMEOUT="600"
 ## Что подтверждено
 
 Адрес официальной ARM64 CPU-сборки и наличие `llama-server.exe` в архиве проверены. Запуск Windows ARM64 EXE, модели на SQ1 и распознавание реальным llama-server в облачной Linux-среде не проверены. Нужны локальные проверки выше. Надписи LM Studio в диагностике приложения пока относятся к выбранному совместимому LLM API и не означают, что обязательно используется LM Studio.
+
+## Если сервер завершается с кодом -1073741795
+
+Код Windows `0xC000001D` означает недопустимую инструкцию. На SQ1 запуск `--version` прошёл, но инициализация сервера завершилась с этим кодом. Это не подтверждает совместимость готового архива с SQ1. В исходниках проверенного commit `abee0c847` файл `cmake/arm64-windows-llvm.cmake` устанавливает глобальный `-march=armv8.7-a`; это согласуется с несовместимостью на более старом SQ1, хотя конкретная аварийная инструкция не определена отладчиком.
+
+Нужна сборка с более низким базовым набором инструкций. Следующие команды подготовлены по официальным CMake-настройкам; в облачной Linux-среде Windows-сборка и её запуск не выполнялись.
+
+1. Установите Visual Studio 2022 Build Tools с рабочей нагрузкой C++ и компонентами ARM64 C++ build tools, Windows SDK, CMake, Clang compiler и Ninja. Официальная документация сборки: https://github.com/ggml-org/llama.cpp/blob/b11550/docs/build.md .
+2. Скачайте исходники https://github.com/ggml-org/llama.cpp/archive/refs/tags/b11550.zip и распакуйте в отдельную папку, например `C:\Projects\llama.cpp-b11550`.
+3. Откройте ARM64 Native Tools Command Prompt for VS 2022 и перейдите в папку исходников. Убедитесь, что доступны `cmake` и `clang`. Не используйте обычный MSVC для этой конфигурации: upstream требует Clang для `GGML_NATIVE=OFF` на ARM.
+4. Настройте отдельный каталог сборки, явно заменяя глобальные флаги toolchain:
+
+```bat
+cmake --preset arm64-windows-llvm-release -DCMAKE_C_FLAGS="-march=armv8-a" -DCMAKE_CXX_FLAGS="-march=armv8-a" -DGGML_NATIVE=OFF -DGGML_CPU_ARM_ARCH=armv8-a -DGGML_CPU_ALL_VARIANTS=OFF -DGGML_CPU_KLEIDIAI=OFF -DGGML_OPENMP=OFF
+cmake --build build-arm64-windows-llvm-release --target llama-server -j 2
+```
+
+Если конфигурация не завершилась успешно, остановитесь и разберите ошибку — запуск сборки после неудачной конфигурации не является проверкой.
+
+5. Найдите созданный `llama-server.exe` в каталоге сборки, оставьте его DLL рядом. Сначала проверьте `--version`, затем запуск GGUF и `/health`. Не смешивайте DLL нового и прежнего архивов. Сборка отключает дополнительные ускорения и может работать медленнее.
