@@ -24,13 +24,44 @@ def model_name():
 def base_url():
     return os.getenv("LM_STUDIO_URL", "http://127.0.0.1:1234/v1").rstrip("/")
 
+class ExtractionError(Exception):
+    """A diagnostic safe to display without response bodies or document text."""
+
 async def extract_kind(text, kind):
+    try:
+        return await _extract_kind(text, kind)
+    except httpx.TimeoutException as exc:
+        raise ExtractionError("LM Studio не ответила за отведённое время. Проверьте журнал сервера и скорость генерации; LM_STUDIO_TIMEOUT задаёт тайм-аут в секундах (по умолчанию 180).") from exc
+    except httpx.HTTPStatusError as exc:
+        status = exc.response.status_code
+        hint = {
+            400: "Проверьте в журнале LM Studio идентификатор модели, размер контекста и поддержку JSON-схемы.",
+            401: "Сервер требует авторизацию. Проверьте настройку LM_STUDIO_API_KEY.",
+            403: "Сервер отклонил доступ. Проверьте настройки авторизации и доступа.",
+            404: "Проверьте LM_STUDIO_URL (он должен включать /v1) и идентификатор модели.",
+            503: "Проверьте, что модель загружена и сервер готов к генерации."
+        }.get(status, "Посмотрите журнал сервера LM Studio в момент запроса.")
+        raise ExtractionError(f"LM Studio вернула HTTP {status}. {hint}") from exc
+    except httpx.RequestError as exc:
+        raise ExtractionError("Не удалось подключиться к LM Studio. Проверьте, что сервер запущен, а LM_STUDIO_URL содержит правильный адрес и порт.") from exc
+    except json.JSONDecodeError as exc:
+        raise ExtractionError("Модель или API вернули невалидный JSON. Проверьте поддержку структурированных ответов и журнал LM Studio.") from exc
+    except ValueError as exc:
+        raise ExtractionError(str(exc)) from exc
+
+async def _extract_kind(text, kind):
     prompt = (ROOT / "prompts" / f"{kind}.txt").read_text()
     results = []
     headers = {}
     if os.getenv("LM_STUDIO_API_KEY"):
         headers["Authorization"] = "Bearer " + os.environ["LM_STUDIO_API_KEY"]
-    async with httpx.AsyncClient(timeout=180, headers=headers) as client:
+    try:
+        timeout = float(os.getenv("LM_STUDIO_TIMEOUT", "180"))
+    except ValueError as exc:
+        raise ValueError("LM_STUDIO_TIMEOUT должен быть числом от 1 до 3600") from exc
+    if not 1 <= timeout <= 3600:
+        raise ValueError("LM_STUDIO_TIMEOUT должен быть числом от 1 до 3600")
+    async with httpx.AsyncClient(timeout=timeout, headers=headers) as client:
         for start in range(0, len(text), 5500):
             chunk = text[start:start + 6500]
             response = await client.post(base_url() + "/chat/completions", json={
@@ -39,10 +70,18 @@ async def extract_kind(text, kind):
                     "name": "entities", "strict": True, "schema": PERSON_SCHEMA if kind == "persons" else ENTITY_SCHEMA}},
                 "messages": [{"role": "system", "content": prompt}, {"role": "user", "content": chunk}]})
             response.raise_for_status()
-            choice = response.json()["choices"][0]
+            envelope = response.json()
+            choices = envelope.get("choices") if isinstance(envelope, dict) else None
+            if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+                raise ValueError("API LM Studio вернул ответ без ожидаемого списка choices")
+            choice = choices[0]
             if choice.get("finish_reason") != "stop":
                 raise ValueError("Ответ модели не завершён; уменьшите размер фрагмента или увеличьте лимит генерации")
-            payload = json.loads(choice["message"]["content"])
+            message = choice.get("message")
+            content = message.get("content") if isinstance(message, dict) else None
+            if not isinstance(content, str):
+                raise ValueError("API LM Studio вернул ответ без текстового message.content")
+            payload = json.loads(content)
             if kind == "persons":
                 if not isinstance(payload, list):
                     raise ValueError("Модель должна вернуть массив сведений о людях")

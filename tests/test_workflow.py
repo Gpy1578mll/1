@@ -80,7 +80,7 @@ def test_llm_validates_exact_source(monkeypatch):
         async def __aexit__(self,*args): pass
         async def post(self,*args,**kwargs): return Response()
     monkeypatch.setattr(llm.httpx,'AsyncClient',Client)
-    with pytest.raises(ValueError,match='отсутствует'):
+    with pytest.raises(llm.ExtractionError,match='отсутствует'):
         asyncio.run(llm.extract_kind('Иванов', 'organizations'))
 
 @pytest.mark.parametrize('finish_reason', ['stop','length'])
@@ -108,7 +108,7 @@ def test_lm_studio_request_and_response(monkeypatch, finish_reason):
             return Response()
     monkeypatch.setattr(llm.httpx,'AsyncClient',Client)
     if finish_reason == 'length':
-        with pytest.raises(ValueError,match='не завершён'):
+        with pytest.raises(llm.ExtractionError,match='не завершён'):
             asyncio.run(llm.extract_kind('Иванову','persons'))
     else:
         result=asyncio.run(llm.extract_kind('Иванову','persons'))

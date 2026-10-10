@@ -1,6 +1,7 @@
 import asyncio
 import io
 import json
+import logging
 import os
 from pathlib import Path
 import secrets
@@ -12,7 +13,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from docx import Document
 import pymupdf
-from app.llm import KINDS, ROOT, model_name
+from app.llm import KINDS, ROOT, model_name, ExtractionError
 from app.persons import validate_spans, person_label
 from app.extract_persons import extract as persons
 from app.extract_organizations import extract as organizations
@@ -73,16 +74,22 @@ async def process(token):
     job = JOBS[token]
     try:
         found = []
-        for extractor in (persons, organizations, entrepreneurs, communications):
+        for stage, extractor in (("Сведения о людях", persons), ("Организации", organizations),
+                                 ("ИП", entrepreneurs), ("Коммуникации", communications)):
+            job["stage"] = stage
             found.extend(await extractor(job["text"]))
         unique = {(e["kind"], e["start"], e["end"], e["normalized_value"],
                    json.dumps(e.get("person"), sort_keys=True, ensure_ascii=False),
                    json.dumps(e.get("source_spans"), sort_keys=True)): e for e in found}
         job["entities"] = sorted(unique.values(), key=lambda e: (e["start"], e["kind"]))
         job["status"] = "review"
-    except Exception:
+    except ExtractionError as exc:
         job["status"] = "error"
-        job["error"] = "Распознавание не завершено. Проверьте доступность LM Studio, наличие модели и корректность её JSON-ответа."
+        job["error"] = f"{job.get('stage', 'Распознавание')}: {exc}"
+    except Exception as exc:
+        job["status"] = "error"
+        job["error"] = "Внутренняя ошибка обработки. Тип ошибки указан в консоли Python сервера."
+        logging.getLogger(__name__).error("Entity processing failed (%s)", type(exc).__name__)
 
 @app.get("/")
 def index():
@@ -101,8 +108,10 @@ async def upload(file: UploadFile):
         text = await asyncio.to_thread(read_text, filename, contents)
     except Exception as exc:
         raise HTTPException(400, "Не удалось прочитать файл. Поддерживаются TXT, DOCX и текстовый PDF") from exc
-    if not text.strip() or len(text) > 300000:
-        raise HTTPException(400, "Документ пуст, требует OCR или превышает 300 000 символов")
+    if not text.strip():
+        raise HTTPException(400, "Из файла не извлечён текст. Проверьте его содержимое; PDF-скану требуется OCR.")
+    if len(text) > 300000:
+        raise HTTPException(400, f"Извлечено {len(text)} символов; максимум — 300 000.")
     try:
         model = model_name()
     except ValueError as exc:
