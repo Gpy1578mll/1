@@ -52,14 +52,7 @@ async def extract_kind(text, kind):
     except httpx.HTTPStatusError as exc:
         status = exc.response.status_code
         if provider_name() == "gemini":
-            hints = {
-                400: "Проверьте модель, API-ключ и поддержку структурированных ответов.",
-                401: "Проверьте GEMINI_API_KEY.",
-                403: "Проверьте права ключа и доступность Gemini API в вашем регионе.",
-                404: "Указанная GEMINI_MODEL не найдена или недоступна этому ключу.",
-                429: "Исчерпана квота или превышена частота запросов. Проверьте лимиты в Google AI Studio; автоматического платного переключения нет.",
-                503: "Сервис временно недоступен. Повторите позже."}
-            raise ExtractionError(f"Gemini API вернул HTTP {status}. " + hints.get(status, "Проверьте состояние сервиса Google.")) from exc
+            raise ExtractionError(gemini.error_description(exc.response)) from exc
         hint = {
             400: "Проверьте в журнале LM Studio идентификатор модели, размер контекста и поддержку JSON-схемы.",
             401: "Сервер требует авторизацию. Проверьте настройку LM_STUDIO_API_KEY.",

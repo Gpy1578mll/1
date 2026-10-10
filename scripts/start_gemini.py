@@ -26,33 +26,37 @@ def main():
         except getpass.GetPassWarning:
             print('Скрытый ввод недоступен. Запустите сценарий в обычном терминале или задайте GEMINI_API_KEY через окружение.')
             return 1
-    if not os.getenv('GEMINI_MODEL', '').strip():
-        os.environ['GEMINI_MODEL'] = input('Введите идентификатор модели из Google AI Studio: ').strip()
+    # Check the key first: a models-list failure cannot be caused by a typed model name.
     try:
-        model = gemini.model_name()
         key = gemini.api_key()
+        models = gemini.available_models(key)
+    except httpx.HTTPStatusError as exc:
+        print(gemini.error_description(exc.response))
+        return 1
+    except httpx.RequestError:
+        print('Не удалось подключиться к Gemini API. Проверьте интернет и доступ к generativelanguage.googleapis.com.')
+        return 1
     except ValueError as exc:
         print(str(exc))
         return 1
-    # Verify access and model availability without uploading a document.
-    try:
-        response = httpx.get(f'{gemini.ENDPOINT}/{model}', headers={'x-goog-api-key': key}, timeout=30)
-        response.raise_for_status()
-        metadata = response.json()
-        methods = metadata.get('supportedGenerationMethods') if isinstance(metadata, dict) else None
-        if not isinstance(methods, list) or 'generateContent' not in methods:
-            print('Эта модель не поддерживает generateContent. Выберите текстовую модель Gemini.')
+    if not models:
+        print('Для этого ключа не найдено моделей с поддержкой generateContent.')
+        return 1
+    selected = os.getenv('GEMINI_MODEL', '').strip().removeprefix('models/')
+    if selected not in models:
+        print('Доступные API-модели (наличие в списке не гарантирует бесплатную квоту):')
+        for index, name in enumerate(models, 1):
+            print(f'{index}. {name}')
+        answer = input('Введите номер или точное имя текстовой модели с JSON-ответами: ').strip()
+        if answer.isdecimal():
+            index = int(answer) - 1
+            selected = models[index] if 0 <= index < len(models) else ''
+        else:
+            selected = answer.removeprefix('models/')
+        if selected not in models:
+            print('Модель отсутствует в списке. Повторите запуск и выберите доступную модель.')
             return 1
-    except httpx.HTTPStatusError as exc:
-        status = exc.response.status_code
-        hints = {400:'Проверьте API-ключ и идентификатор модели.',
-                 401:'Проверьте API-ключ.',403:'Проверьте доступ ключа и доступность API в вашем регионе.',
-                 404:'Модель не найдена. Проверьте её идентификатор.',429:'Превышена квота сервиса.'}
-        print(f'Gemini API: HTTP {status}. ' + hints.get(status, 'Проверьте доступность сервиса Google.'))
-        return 1
-    except (httpx.RequestError, ValueError, AttributeError):
-        print('Не удалось проверить Gemini API. Проверьте интернет и доступ к generativelanguage.googleapis.com.')
-        return 1
+    os.environ['GEMINI_MODEL'] = selected
     print('Доступ к модели проверен. Откройте в браузере http://127.0.0.1:8000')
     print('Для остановки нажмите Ctrl+C. Ключ не сохраняется в файлах.')
     uvicorn.run('app.main:app', host='127.0.0.1', port=8000)
