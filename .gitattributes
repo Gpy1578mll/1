@@ -1,0 +1,2 @@
+# Keep Windows batch launchers as exact ASCII/CRLF bytes in archives.
+*.bat -text
